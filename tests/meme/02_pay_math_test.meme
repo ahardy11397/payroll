@@ -1,0 +1,76 @@
+# 02_pay_math_test.meme -- overtime split at the 160h boundary, half-up
+# rounding on fractional cents (straight pay, overtime premium, retirement),
+# and bracket threshold lookup.
+use payroll_logic
+
+test hours_split_exactly_160h_test:
+    assert regular_hours_x100(16000) == 16000
+    assert overtime_hours_x100(16000) == 0
+
+test hours_split_one_hundredth_past_160h_test:
+    assert regular_hours_x100(16001) == 16000
+    assert overtime_hours_x100(16001) == 1
+
+test hours_split_edges_test:
+    assert regular_hours_x100(0) == 0
+    assert overtime_hours_x100(0) == 0
+    assert regular_hours_x100(15999) == 15999
+    assert overtime_hours_x100(15999) == 0
+    assert regular_hours_x100(32000) == 16000
+    assert overtime_hours_x100(32000) == 16000
+
+test straight_pay_rounding_test:
+    # exact cases are untouched
+    assert straight_pay_cents(0, 2500) == 0
+    assert straight_pay_cents(3750, 2500) == 93750
+    assert straight_pay_cents(16000, 2500) == 400000
+    # 0.01h at $0.50 = 0.5 cents -> rounds half-up to 1 cent
+    assert straight_pay_cents(1, 50) == 1
+    # 0.01h at $0.49 = 0.49 cents -> 0 cents
+    assert straight_pay_cents(1, 49) == 0
+    # 37.50h at $33.33 = 1249.875 -> 124988 cents (half-up on .875)
+    assert straight_pay_cents(3750, 3333) == 124988
+
+test overtime_premium_rounding_test:
+    assert overtime_premium_cents(0, 2500) == 0
+    # 0.01h at $1.00: straight 1 cent, premium 0.5 -> half-up 1 cent
+    assert overtime_premium_cents(1, 100) == 1
+    # 0.02h at $1.00: straight 2 cents, premium exactly 1
+    assert overtime_premium_cents(2, 100) == 1
+    # 0.03h at $1.00: straight 3 cents, premium 1.5 -> half-up 2 cents
+    assert overtime_premium_cents(3, 100) == 2
+    # 10h at $25.00: straight 25000, premium exactly 12500
+    assert overtime_premium_cents(1000, 2500) == 12500
+
+test retirement_rounding_half_up_test:
+    assert retirement_cents(0) == 0
+    # 5% of 10 = 0.5 -> 1 (half-up)
+    assert retirement_cents(10) == 1
+    # 5% of 100 = 5 exactly
+    assert retirement_cents(100) == 5
+    # 5% of 1250 = 62.5 -> 63 (half-up on magnitude)
+    assert retirement_cents(1250) == 63
+    # 5% of 1240 = 62 exactly
+    assert retirement_cents(1240) == 62
+    # 5% of 1230 = 61.5 -> 62 (half-up)
+    assert retirement_cents(1230) == 62
+    # 5% of 400000 = 20000 exactly
+    assert retirement_cents(400000) == 20000
+
+test tax_threshold_lookup_test:
+    assert tax_bracket_threshold_cents("single") == 250000
+    assert tax_bracket_threshold_cents("married") == 500000
+
+test tax_rate_rounding_test:
+    # 10% of 5 cents = 0.5 -> 1 (half-up)
+    assert tax_at_10_cents(5) == 1
+    # 10% of 49 = 4.9 -> 5
+    assert tax_at_10_cents(49) == 5
+    # 10% of 50 = 5 exactly
+    assert tax_at_10_cents(50) == 5
+    # 22% of 1 cent = 0.22 -> 0
+    assert tax_at_22_cents(1) == 0
+    # 22% of 25 cents = 5.5 -> 6 (half-up)
+    assert tax_at_22_cents(25) == 6
+    # 22% of 250000 = 55000 exactly
+    assert tax_at_22_cents(250000) == 55000

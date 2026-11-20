@@ -1,0 +1,186 @@
+# payroll_model.meme -- payroll domain records, JSON persistence, lookup,
+# and validation helpers.
+#
+# Money is always integer cents (Int); hours are hundredths of an hour
+# (hours_x100, Int: 3750 = 37.50h). Error channels are Optional<String>
+# (nothing = ok, some = one-line error message). No function mutates a
+# caller's list: mutators return a NEW list built with an explicit
+# element-wise copy so every backend (Python, Rust, C++, Go, C, TypeScript)
+# sees identical value semantics.
+#
+# Persistence is JSON files under data/ (created on demand) read through
+# the Optional record readers: a missing, corrupt, or wrong-shape file
+# degrades to an empty list, never a traceback.
+
+record Employee:
+    id: String
+    name: String
+    rate_cents: Int
+    filing_status: String
+
+record Timecard:
+    employee_id: String
+    month: String
+    hours_x100: Int
+
+record Payslip:
+    employee_id: String
+    month: String
+    name: String
+    filing_status: String
+    rate_cents: Int
+    hours_x100: Int
+    regular_hours_x100: Int
+    ot_hours_x100: Int
+    gross_cents: Int
+    overtime_premium_cents: Int
+    retirement_cents: Int
+    tax_cents: Int
+    net_cents: Int
+
+# ---------------------------------------------------------------- persistence
+
+function load_employees(path: String) -> List<Employee>:
+    define loaded as read json records Employee from file path or else nothing
+    define result as empty List<Employee>
+    if loaded is not nothing:
+        set result to value of loaded
+    return result
+
+function save_employees(employees: List<Employee>, path: String) -> Void:
+    write employees as json to file path
+
+function load_timecards(path: String) -> List<Timecard>:
+    define loaded as read json records Timecard from file path or else nothing
+    define result as empty List<Timecard>
+    if loaded is not nothing:
+        set result to value of loaded
+    return result
+
+function save_timecards(timecards: List<Timecard>, path: String) -> Void:
+    write timecards as json to file path
+
+function load_payslips(path: String) -> List<Payslip>:
+    define loaded as read json records Payslip from file path or else nothing
+    define result as empty List<Payslip>
+    if loaded is not nothing:
+        set result to value of loaded
+    return result
+
+function save_payslips(payslips: List<Payslip>, path: String) -> Void:
+    write payslips as json to file path
+
+# A data file that exists but does not parse as its record list (corrupt
+# JSON, or any record missing a required field) must be reported loudly:
+# silently treating it as empty would wipe stored state on the next save
+# and defeat the duplicate-run month lock. A missing file is fine (normal
+# first-run state) and returns nothing.
+function first_corrupt_data_file(employees_path: String, timecards_path: String, payslips_path: String) -> Optional<String>:
+    define raw as read string from file employees_path or else nothing
+    if raw is not nothing:
+        define typed as read json records Employee from file employees_path or else nothing
+        if typed is nothing:
+            define msg as employees_path + " is corrupt; fix or remove it before continuing"
+            return optional msg
+    define raw_t as read string from file timecards_path or else nothing
+    if raw_t is not nothing:
+        define typed_t as read json records Timecard from file timecards_path or else nothing
+        if typed_t is nothing:
+            define tmsg as timecards_path + " is corrupt; fix or remove it before continuing"
+            return optional tmsg
+    define raw_p as read string from file payslips_path or else nothing
+    if raw_p is not nothing:
+        define typed_p as read json records Payslip from file payslips_path or else nothing
+        if typed_p is nothing:
+            define pmsg as payslips_path + " is corrupt; fix or remove it before continuing"
+            return optional pmsg
+    return nothing
+
+# -------------------------------------------------------------------- lookup
+
+function find_employee_index(employees: List<Employee>, wanted: String) -> Int:
+    define idx as 0 - 1
+    for i from 0 to length of employees - 1:
+        if employees[i].id == wanted:
+            set idx to i
+    return idx
+
+function find_timecard_index(timecards: List<Timecard>, employee_id: String, month: String) -> Int:
+    define idx as 0 - 1
+    for i from 0 to length of timecards - 1:
+        if timecards[i].employee_id == employee_id and timecards[i].month == month:
+            set idx to i
+    return idx
+
+function find_payslip_index(payslips: List<Payslip>, employee_id: String, month: String) -> Int:
+    define idx as 0 - 1
+    for i from 0 to length of payslips - 1:
+        if payslips[i].employee_id == employee_id and payslips[i].month == month:
+            set idx to i
+    return idx
+
+function has_payslip(payslips: List<Payslip>, employee_id: String, month: String) -> Bool:
+    if find_payslip_index(payslips, employee_id, month) >= 0:
+        return true
+    return false
+
+function month_is_run(payslips: List<Payslip>, month: String) -> Bool:
+    for each p in payslips:
+        if p.month == month:
+            return true
+    return false
+
+# ---------------------------------------------------------------- validation
+
+function is_valid_filing_status(status: String) -> Bool:
+    return status == "single" or status == "married"
+
+# Rate cap: at most 100000000 cents ($1,000,000.00) per hour. Together with
+# the monthly hours cap (74400 x100) this keeps every downstream product
+# (hours_x100 * rate_cents, the 5% and 22% tax multiplies) far inside the
+# 64-bit Int range on all six backends.
+function is_plausible_rate_cents(rate_cents: Int) -> Bool:
+    return rate_cents > 0 and rate_cents <= 100000000
+
+# Strict yyyy-mm format check: four-digit year (1970+), two-digit month
+# 01..12. Returns nothing when the month is usable, else an error message.
+function validate_month(month: String) -> Optional<String>:
+    define parts as split month by "-"
+    if length of parts != 2:
+        return optional "month must be <yyyy>-<mm>, for example 2026-10"
+    if length of string parts[0] != 4:
+        return optional "month year must be four digits"
+    if length of string parts[1] != 2:
+        return optional "month number must be two digits"
+    define year as integer value of parts[0] or else 0
+    define mon as integer value of parts[1] or else 0
+    if year < 1970:
+        return optional "year must be 1970 or later"
+    if mon < 1 or mon > 12:
+        return optional "month number must be 01..12"
+    return nothing
+
+# ------------------------------------------------------------- mutators
+# Explicit element-wise copy: `define out as src` copies on Python, Rust,
+# and C++ but aliases the backing storage on Go, C, and TypeScript, so the
+# mutator builds the result element by element instead.
+
+function copy_timecards(timecards: List<Timecard>) -> List<Timecard>:
+    define out as empty List<Timecard>
+    for each t in timecards:
+        add t to out
+    return out
+
+# Adds hours to the (employee, month) timecard, creating it when absent
+# (repeated add-time for the same month accumulates hours). Returns a NEW
+# list; the caller's list is untouched on every backend.
+function apply_add_time(timecards: List<Timecard>, employee_id: String, month: String, hours_x100: Int) -> List<Timecard>:
+    define out as copy_timecards(timecards)
+    define idx as find_timecard_index(out, employee_id, month)
+    if idx >= 0:
+        define updated as Timecard(employee_id=employee_id, month=month, hours_x100=out[idx].hours_x100 + hours_x100)
+        set out[idx] to updated
+    else:
+        define card as Timecard(employee_id=employee_id, month=month, hours_x100=hours_x100)
+        add card to out
+    return out

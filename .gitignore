@@ -1,3 +1,6 @@
 data/
 payroll_bin
 tests/tmp/
+build.lock
+*.meme.lock
+.superpowers-ledger.md

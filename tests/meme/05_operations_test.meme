@@ -1,0 +1,139 @@
+# 05_operations_test.meme -- run validation (duplicate run rejection, empty
+# month), history month sorting, payslip lookup, and rendering text helpers.
+use payroll_logic
+use payroll_model
+
+test validate_run_ok_test:
+    define emps as empty List<Employee>
+    add Employee(id="e1", name="Ada", rate_cents=2500, filing_status="single") to emps
+    define cards as empty List<Timecard>
+    add Timecard(employee_id="e1", month="2026-10", hours_x100=16000) to cards
+    define slips as empty List<Payslip>
+    assert validate_run(emps, cards, slips, "2026-10") is nothing
+
+test validate_run_bad_month_test:
+    define emps as empty List<Employee>
+    define cards as empty List<Timecard>
+    define slips as empty List<Payslip>
+    assert validate_run(emps, cards, slips, "2026-1") is not nothing
+    assert validate_run(emps, cards, slips, "banana") is not nothing
+
+test validate_run_duplicate_rejected_test:
+    # duplicate run for the same month is rejected, even with fresh timecards
+    define emps as empty List<Employee>
+    add Employee(id="e1", name="Ada", rate_cents=2500, filing_status="single") to emps
+    define cards as empty List<Timecard>
+    add Timecard(employee_id="e1", month="2026-10", hours_x100=16000) to cards
+    define slips as empty List<Payslip>
+    add Payslip(employee_id="e1", month="2026-10", name="Ada", filing_status="single", rate_cents=2500, hours_x100=16000, regular_hours_x100=16000, ot_hours_x100=0, gross_cents=400000, overtime_premium_cents=0, retirement_cents=20000, tax_cents=53600, net_cents=326400) to slips
+    define err as validate_run(emps, cards, slips, "2026-10")
+    assert err is not nothing
+
+test validate_run_duplicate_other_employee_rejected_test:
+    # once any employee is paid for a month the whole month is run: a second
+    # run for that month is rejected even for a different employee id
+    define emps as empty List<Employee>
+    add Employee(id="e1", name="Ada", rate_cents=2500, filing_status="single") to emps
+    add Employee(id="e2", name="Grace", rate_cents=2500, filing_status="single") to emps
+    define cards as empty List<Timecard>
+    add Timecard(employee_id="e2", month="2026-10", hours_x100=16000) to cards
+    define slips as empty List<Payslip>
+    add Payslip(employee_id="e1", month="2026-10", name="Ada", filing_status="single", rate_cents=2500, hours_x100=16000, regular_hours_x100=16000, ot_hours_x100=0, gross_cents=400000, overtime_premium_cents=0, retirement_cents=20000, tax_cents=53600, net_cents=326400) to slips
+    assert validate_run(emps, cards, slips, "2026-10") is not nothing
+
+test validate_run_no_timecards_test:
+    define emps as empty List<Employee>
+    add Employee(id="e1", name="Ada", rate_cents=2500, filing_status="single") to emps
+    define cards as empty List<Timecard>
+    define slips as empty List<Payslip>
+    assert validate_run(emps, cards, slips, "2026-10") is not nothing
+    # timecards exist, but for another month: still nothing to pay
+    add Timecard(employee_id="e1", month="2026-11", hours_x100=16000) to cards
+    assert validate_run(emps, cards, slips, "2026-10") is not nothing
+    assert validate_run(emps, cards, slips, "2026-11") is nothing
+
+test validate_run_unknown_employee_timecard_test:
+    # a timecard referencing an employee that is not in the employee list
+    # must fail validation with one clean message, never crash the run loop
+    define emps as empty List<Employee>
+    add Employee(id="e1", name="Ada", rate_cents=2500, filing_status="single") to emps
+    define cards as empty List<Timecard>
+    add Timecard(employee_id="ghost", month="2026-10", hours_x100=16000) to cards
+    define slips as empty List<Payslip>
+    define err as validate_run(emps, cards, slips, "2026-10")
+    assert err is not nothing
+    # once the employee exists, the same state validates cleanly
+    add Employee(id="ghost", name="Casper", rate_cents=100, filing_status="single") to emps
+    define ok as validate_run(emps, cards, slips, "2026-10")
+    assert ok is nothing
+
+test count_timecards_for_month_test:
+    define cards as empty List<Timecard>
+    add Timecard(employee_id="e1", month="2026-10", hours_x100=100) to cards
+    add Timecard(employee_id="e2", month="2026-10", hours_x100=100) to cards
+    add Timecard(employee_id="e1", month="2026-11", hours_x100=100) to cards
+    assert count_timecards_for_month(cards, "2026-10") == 2
+    assert count_timecards_for_month(cards, "2026-11") == 1
+    assert count_timecards_for_month(cards, "2026-12") == 0
+
+test history_months_sorted_test:
+    define slips as empty List<Payslip>
+    add Payslip(employee_id="e1", month="2026-12", name="Ada", filing_status="single", rate_cents=1, hours_x100=1, regular_hours_x100=1, ot_hours_x100=0, gross_cents=1, overtime_premium_cents=0, retirement_cents=0, tax_cents=0, net_cents=1) to slips
+    add Payslip(employee_id="e1", month="2025-05", name="Ada", filing_status="single", rate_cents=1, hours_x100=1, regular_hours_x100=1, ot_hours_x100=0, gross_cents=1, overtime_premium_cents=0, retirement_cents=0, tax_cents=0, net_cents=1) to slips
+    add Payslip(employee_id="e2", month="2026-01", name="Grace", filing_status="single", rate_cents=1, hours_x100=1, regular_hours_x100=1, ot_hours_x100=0, gross_cents=1, overtime_premium_cents=0, retirement_cents=0, tax_cents=0, net_cents=1) to slips
+    add Payslip(employee_id="e1", month="2026-01", name="Ada", filing_status="single", rate_cents=1, hours_x100=1, regular_hours_x100=1, ot_hours_x100=0, gross_cents=1, overtime_premium_cents=0, retirement_cents=0, tax_cents=0, net_cents=1) to slips
+    define months as history_months(slips, "e1")
+    # ascending yyyy-mm = chronological, other employees excluded
+    assert length of months == 3
+    assert months[0] == "2025-05"
+    assert months[1] == "2026-01"
+    assert months[2] == "2026-12"
+    assert length of history_months(slips, "nobody") == 0
+
+test history_full_flow_test:
+    # pay two months, then verify the history helper + payslip lookup line up
+    define emps as empty List<Employee>
+    add Employee(id="e1", name="Ada", rate_cents=2500, filing_status="single") to emps
+    define cards as empty List<Timecard>
+    set cards to apply_add_time(cards, "e1", "2026-11", 16000)
+    set cards to apply_add_time(cards, "e1", "2026-10", 16001)
+    define slips as empty List<Payslip>
+    for each t in cards:
+        define emp as emps[0]
+        add compute_payslip(emp, t) to slips
+    assert length of slips == 2
+    define months as history_months(slips, "e1")
+    assert months[0] == "2026-10"
+    assert months[1] == "2026-11"
+    define idx as find_payslip_index(slips, "e1", "2026-11")
+    assert idx >= 0
+    assert slips[idx].net_cents == 326400
+
+test dollars_text_test:
+    assert dollars_text(0) == "0.00"
+    assert dollars_text(1) == "0.01"
+    assert dollars_text(10) == "0.10"
+    assert dollars_text(1050) == "10.50"
+    assert dollars_text(123456) == "1234.56"
+    assert dollars_text(400025) == "4000.25"
+    assert dollars_text(1000000) == "10000.00"
+    assert dollars_text(0 - 250) == "-2.50"
+
+test hours_text_test:
+    assert hours_text(0) == "0.00"
+    assert hours_text(1) == "0.01"
+    assert hours_text(105) == "1.05"
+    assert hours_text(3750) == "37.50"
+    assert hours_text(16000) == "160.00"
+    assert hours_text(16001) == "160.01"
+    assert hours_text(32000) == "320.00"
+
+test pad2_and_month_text_test:
+    assert pad2(3) == "03"
+    assert pad2(11) == "11"
+    # fixed epoch: 2026-10-01 00:00:00 UTC is epoch 1790812800
+    assert epoch_to_month_text(1790812800) == "2026-10"
+    # 1970-01-01 00:00:00 UTC
+    assert epoch_to_month_text(0) == "1970-01"
+    # 2026-11-20 12:00:00 UTC is epoch 1795176000
+    assert epoch_to_month_text(1795176000) == "2026-11"

@@ -1,0 +1,48 @@
+# 03_tax_test.meme -- marginal bracket math at exact boundaries
+# (250000 / 500000 cents), one cent past, and well past, for both filing
+# statuses.
+use payroll_logic
+
+test single_boundary_exact_test:
+    # 10% of 250000 cents ($2500.00) = 25000 cents exactly, still in the
+    # 10% bracket (threshold is inclusive)
+    assert tax_cents(250000, "single") == 25000
+
+test single_one_cent_past_test:
+    # 250001 = 25000 (10% of 250000) + 22% of 1 cent -> rounds to 0 extra
+    assert tax_cents(250001, "single") == 25000
+
+test single_just_past_rounding_test:
+    # 22% of 3 cents = 0.66 -> 1 extra cent (half-up)
+    assert tax_cents(250003, "single") == 25001
+
+test single_well_past_test:
+    # 500000 for single: 25000 + 22% of 250000 = 25000 + 55000
+    assert tax_cents(500000, "single") == 80000
+    # 750000: 25000 + 22% of 500000 = 25000 + 110000
+    assert tax_cents(750000, "single") == 135000
+
+test married_boundary_exact_test:
+    # 10% of 500000 = 50000 exactly, still in the 10% bracket
+    assert tax_cents(500000, "married") == 50000
+
+test married_one_cent_past_test:
+    # 500001 = 50000 + 22% of 1 cent -> 0 extra
+    assert tax_cents(500001, "married") == 50000
+
+test married_below_threshold_test:
+    # married taxable that is still well inside the 10% bracket
+    assert tax_cents(0, "married") == 0
+    assert tax_cents(1, "married") == 0
+    assert tax_cents(250000, "married") == 25000
+
+test single_zero_taxable_test:
+    assert tax_cents(0, "single") == 0
+
+test both_statuses_agree_below_first_threshold_test:
+    # below 250000 cents both filing statuses pay plain 10%
+    assert tax_cents(100000, "single") == tax_cents(100000, "married")
+    assert tax_cents(100000, "single") == 10000
+
+test thresholds_are_ordered_test:
+    assert tax_bracket_threshold_cents("married") > tax_bracket_threshold_cents("single")

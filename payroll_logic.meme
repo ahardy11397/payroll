@@ -1,0 +1,240 @@
+# payroll_logic.meme -- pay computation, marginal tax brackets, payslip
+# building and rendering, and operation validation.
+#
+# All arithmetic is integer cents / hundredths of an hour. Fractional
+# cent results are rounded half-up on magnitude (amounts here are never
+# negative, so that is `(x * k + 50) / 100` style integer division).
+#
+# Tax brackets (annual-equivalent thresholds applied to this month's
+# taxable gross):
+#   single  -- 10% up to 250000 cents, 22% beyond
+#   married -- 10% up to 500000 cents, 22% beyond
+#
+# Payslip line items:
+#   gross    = every recorded hour at the straight hourly rate
+#   overtime = extra half rate on hours beyond 160h/month (16000 x100)
+#   retirement = 5% of gross, half-up
+#   taxable  = gross + overtime premium - retirement
+#   tax      = marginal brackets on taxable
+#   net      = gross + overtime premium - retirement - tax
+
+use payroll_model
+
+# ------------------------------------------------------------------ pay math
+# Overtime threshold: hours beyond 160.00h/month (16000 in hundredths) are
+# overtime at 1.5x (straight pay plus the half-rate premium below).
+
+function regular_hours_x100(hours_x100: Int) -> Int:
+    if hours_x100 > 16000:
+        return 16000
+    return hours_x100
+
+function overtime_hours_x100(hours_x100: Int) -> Int:
+    if hours_x100 > 16000:
+        return hours_x100 - 16000
+    return 0
+
+# Straight pay for hours_x100 at rate_cents/hour, rounded half-up on the
+# fractional cent: (hours_x100 * rate_cents + 50) / 100.
+function straight_pay_cents(hours_x100: Int, rate_cents: Int) -> Int:
+    return (hours_x100 * rate_cents + 50) / 100
+
+# Overtime premium: the extra half rate on overtime hours, rounded half-up.
+function overtime_premium_cents(ot_hours_x100: Int, rate_cents: Int) -> Int:
+    define straight as straight_pay_cents(ot_hours_x100, rate_cents)
+    return (straight + 1) / 2
+
+# Retirement contribution: 5% of gross, rounded half-up on magnitude.
+function retirement_cents(gross_cents: Int) -> Int:
+    return (gross_cents * 5 + 50) / 100
+
+function tax_bracket_threshold_cents(filing_status: String) -> Int:
+    if filing_status == "single":
+        return 250000
+    return 500000
+
+function tax_at_10_cents(amount_cents: Int) -> Int:
+    return (amount_cents * 10 + 50) / 100
+
+function tax_at_22_cents(amount_cents: Int) -> Int:
+    return (amount_cents * 22 + 50) / 100
+
+# Marginal brackets over this month's taxable gross.
+function tax_cents(taxable_cents: Int, filing_status: String) -> Int:
+    define threshold as tax_bracket_threshold_cents(filing_status)
+    if taxable_cents <= threshold:
+        return tax_at_10_cents(taxable_cents)
+    return tax_at_10_cents(threshold) + tax_at_22_cents(taxable_cents - threshold)
+
+# Builds the full stored payslip for one employee's monthly timecard.
+function compute_payslip(emp: Employee, card: Timecard) -> Payslip:
+    define reg as regular_hours_x100(card.hours_x100)
+    define ot as overtime_hours_x100(card.hours_x100)
+    define gross as straight_pay_cents(card.hours_x100, emp.rate_cents)
+    define premium as overtime_premium_cents(ot, emp.rate_cents)
+    define retire as retirement_cents(gross)
+    define taxable as gross + premium - retire
+    define tax as tax_cents(taxable, emp.filing_status)
+    define net as gross + premium - retire - tax
+    return Payslip(employee_id=emp.id, month=card.month, name=emp.name, filing_status=emp.filing_status, rate_cents=emp.rate_cents, hours_x100=card.hours_x100, regular_hours_x100=reg, ot_hours_x100=ot, gross_cents=gross, overtime_premium_cents=premium, retirement_cents=retire, tax_cents=tax, net_cents=net)
+
+# -------------------------------------------------------------- UTC calendar
+# Walking civil-calendar conversion (no date builtins in the language);
+# only used for add-time's default month, never in test assertions.
+
+function is_leap_year(y: Int) -> Bool:
+    if y % 4 != 0:
+        return false
+    if y % 100 != 0:
+        return true
+    if y % 400 == 0:
+        return true
+    return false
+
+function days_in_month(y: Int, m: Int) -> Int:
+    if m == 1 or m == 3 or m == 5 or m == 7 or m == 8 or m == 10 or m == 12:
+        return 31
+    if m == 4 or m == 6 or m == 9 or m == 11:
+        return 30
+    if is_leap_year(y):
+        return 29
+    return 28
+
+function pad2(n: Int) -> String:
+    if n < 10:
+        return "0" + text of n
+    return text of n
+
+# yyyy-mm of a non-negative UTC epoch (current month for add-time).
+function epoch_to_month_text(e: Int) -> String:
+    define days_left as e / 86400
+    define y as 1970
+    define walking_years as true
+    while walking_years:
+        define yd as 365
+        if is_leap_year(y):
+            set yd to 366
+        if days_left >= yd:
+            subtract yd from days_left
+            add 1 to y
+        else:
+            set walking_years to false
+    define m as 1
+    define walking_months as true
+    while walking_months:
+        define md as days_in_month(y, m)
+        if days_left >= md:
+            subtract md from days_left
+            add 1 to m
+        else:
+            set walking_months to false
+    return text of y + "-" + pad2(m)
+
+# ---------------------------------------------------------------- rendering
+# Exact integer rendering of money and hours (see README design notes for
+# why the dollar column is integer math and not binary floats).
+# 1234 cents -> "12.34", -250 -> "-2.50"; 16001 -> "160.01".
+
+function dollars_text(cents: Int) -> String:
+    define mag as cents
+    define neg as cents < 0
+    if neg:
+        set mag to 0 - cents
+    define whole as mag / 100
+    define rem as mag % 100
+    define rem_text as text of rem
+    if rem < 10:
+        set rem_text to "0" + rem_text
+    define out as text of whole + "." + rem_text
+    if neg:
+        set out to "-" + out
+    return out
+
+function hours_text(hours_x100: Int) -> String:
+    define whole as hours_x100 / 100
+    define rem as hours_x100 % 100
+    define rem_text as text of rem
+    if rem < 10:
+        set rem_text to "0" + rem_text
+    return text of whole + "." + rem_text
+
+# Prints one stored payslip, all columns from the stored line items.
+function render_payslip(p: Payslip) -> Void:
+    print "== Payslip: " + p.name + " (id " + p.employee_id + "), " + p.month + " =="
+    print "Hourly rate:      $" + dollars_text(p.rate_cents) + "/h, filing status " + p.filing_status
+    print "Hours:            " + hours_text(p.hours_x100) + " (" + hours_text(p.regular_hours_x100) + " regular + " + hours_text(p.ot_hours_x100) + " overtime)"
+    print "Gross pay:        $" + dollars_text(p.gross_cents)
+    print "Overtime premium: $" + dollars_text(p.overtime_premium_cents)
+    print "Retirement (5%):  -$" + dollars_text(p.retirement_cents)
+    print "Tax withheld:     -$" + dollars_text(p.tax_cents)
+    print "Net pay:          $" + dollars_text(p.net_cents)
+
+# --------------------------------------------------------------- validation
+
+function count_timecards_for_month(timecards: List<Timecard>, month: String) -> Int:
+    define n as 0
+    for each t in timecards:
+        if t.month == month:
+            add 1 to n
+    return n
+
+# validate/apply pair for add-time. Returns nothing when the operation may
+# proceed, else an error message. The hours cap applies to the projected
+# accumulated total for the month (74400 x100 = 744.00h = every hour of a
+# 31-day month), keeping hours_x100 * rate_cents inside 64-bit range.
+function validate_add_time(employees: List<Employee>, timecards: List<Timecard>, payslips: List<Payslip>, employee_id: String, month: String, hours_x100: Int) -> Optional<String>:
+    if find_employee_index(employees, employee_id) < 0:
+        define umsg as "unknown employee: " + employee_id
+        return optional umsg
+    if hours_x100 <= 0:
+        return optional "hours must be a positive integer in hundredths of an hour (3750 = 37.50h)"
+    define merr as validate_month(month)
+    if merr is not nothing:
+        return merr
+    if month_is_run(payslips, month):
+        define lmsg as "payroll for " + month + " already run; timecards for that month are locked"
+        return optional lmsg
+    define projected as hours_x100
+    define idx as find_timecard_index(timecards, employee_id, month)
+    if idx >= 0:
+        set projected to timecards[idx].hours_x100 + hours_x100
+    if projected > 74400:
+        return optional "monthly hours cannot exceed 74400 (744.00h is every hour of a 31-day month)"
+    return nothing
+
+# validate for run: month must be well-formed, not already run, have at
+# least one timecard to pay, and every matching timecard must reference a
+# known employee (a ghost timecard would otherwise crash the run loop).
+function validate_run(employees: List<Employee>, timecards: List<Timecard>, payslips: List<Payslip>, month: String) -> Optional<String>:
+    define merr as validate_month(month)
+    if merr is not nothing:
+        return merr
+    if month_is_run(payslips, month):
+        define dmsg as "payroll for " + month + " has already been run"
+        return optional dmsg
+    if count_timecards_for_month(timecards, month) == 0:
+        define emsg as "no timecards for " + month
+        return optional emsg
+    for each t in timecards:
+        if t.month == month:
+            if find_employee_index(employees, t.employee_id) < 0:
+                define gmsg as "timecard references unknown employee: " + t.employee_id
+                return optional gmsg
+    return nothing
+
+# Months with a stored payslip for one employee, sorted ascending
+# (yyyy-mm sorts lexicographically = chronologically).
+function history_months(payslips: List<Payslip>, employee_id: String) -> List<String>:
+    define out as empty List<String>
+    for each p in payslips:
+        if p.employee_id == employee_id:
+            add p.month to out
+    sort out ascending
+    return out
+
+# Compatibility shim: referencing `format <float> with N decimals` here keeps
+# the runtime float-format helper linked in every backend (some backends emit
+# that helper lazily and the JSON serializer depends on it). Payroll money
+# itself never touches floats; see README design notes.
+function dollars_float_preview(v: Float) -> String:
+    return format v with 2 decimals

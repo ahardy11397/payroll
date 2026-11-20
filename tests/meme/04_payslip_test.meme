@@ -1,0 +1,179 @@
+# 04_payslip_test.meme -- full payslip computation at the overtime boundary
+# (exactly 160h vs 160.01h), the net identity over a random-ish batch, and
+# add-time validation (unknown employee, bad hours, locked month).
+use payroll_logic
+use payroll_model
+
+test no_overtime_exactly_160h_test:
+    define emp as Employee(id="e1", name="Ada Lovelace", rate_cents=2500, filing_status="single")
+    define card as Timecard(employee_id="e1", month="2026-10", hours_x100=16000)
+    define slip as compute_payslip(emp, card)
+    # gross: 160.00h * $25.00 = $4000.00
+    assert slip.gross_cents == 400000
+    assert slip.regular_hours_x100 == 16000
+    assert slip.ot_hours_x100 == 0
+    assert slip.overtime_premium_cents == 0
+    # retirement: 5% of 400000 = 20000
+    assert slip.retirement_cents == 20000
+    # taxable: 400000 - 20000 = 380000; single: 10% of 250000 = 25000
+    # plus 22% of 130000 = 28600 -> 53600
+    assert slip.tax_cents == 53600
+    # net: 400000 - 20000 - 53600 = 326400
+    assert slip.net_cents == 326400
+    assert slip.net_cents == slip.gross_cents + slip.overtime_premium_cents - slip.retirement_cents - slip.tax_cents
+
+test overtime_just_past_160h_test:
+    define emp as Employee(id="e1", name="Ada Lovelace", rate_cents=2500, filing_status="single")
+    define card as Timecard(employee_id="e1", month="2026-10", hours_x100=16001)
+    define slip as compute_payslip(emp, card)
+    # 160.01h: regular 160.00h + 0.01h overtime
+    assert slip.regular_hours_x100 == 16000
+    assert slip.ot_hours_x100 == 1
+    # gross (all hours straight): $4000.25
+    assert slip.gross_cents == 400025
+    # premium: half rate on 0.01h = 0.5 * 25 cents = 12.5 -> 13 (half-up)
+    assert slip.overtime_premium_cents == 13
+    # retirement: 5% of 400025 = 20001.25 -> 20001
+    assert slip.retirement_cents == 20001
+    # taxable: 400025 + 13 - 20001 = 380037
+    # single tax: 25000 + 22% of 130037 (28608.14 -> 28608) = 53608
+    assert slip.tax_cents == 53608
+    # net: 400025 + 13 - 20001 - 53608 = 326429
+    assert slip.net_cents == 326429
+    assert slip.net_cents == slip.gross_cents + slip.overtime_premium_cents - slip.retirement_cents - slip.tax_cents
+
+test married_400h_overtime_test:
+    define emp as Employee(id="e2", name="Grace Hopper", rate_cents=5000, filing_status="married")
+    define card as Timecard(employee_id="e2", month="2026-11", hours_x100=32000)
+    define slip as compute_payslip(emp, card)
+    # 320.00h = 160.00 regular + 160.00 overtime
+    assert slip.regular_hours_x100 == 16000
+    assert slip.ot_hours_x100 == 16000
+    # gross: 320h * $50 = $16000.00
+    assert slip.gross_cents == 1600000
+    # premium: half rate on 160h = 0.5 * 800000 = 400000
+    assert slip.overtime_premium_cents == 400000
+    # retirement: 5% of 1600000 = 80000
+    assert slip.retirement_cents == 80000
+    # taxable: 1600000 + 400000 - 80000 = 1920000
+    # married: 50000 + 22% of 1420000 = 50000 + 312400 = 362400
+    assert slip.tax_cents == 362400
+    # net: 1600000 + 400000 - 80000 - 362400 = 1557600
+    assert slip.net_cents == 1557600
+    assert slip.net_cents == slip.gross_cents + slip.overtime_premium_cents - slip.retirement_cents - slip.tax_cents
+
+test zero_hours_payslip_test:
+    define emp as Employee(id="e3", name="Empty", rate_cents=2500, filing_status="single")
+    define card as Timecard(employee_id="e3", month="2026-09", hours_x100=0)
+    define slip as compute_payslip(emp, card)
+    assert slip.gross_cents == 0
+    assert slip.overtime_premium_cents == 0
+    assert slip.retirement_cents == 0
+    assert slip.tax_cents == 0
+    assert slip.net_cents == 0
+
+test net_identity_random_batch_test:
+    # a random-ish batch of (rate_cents, hours_x100) pairs; per-line asserts
+    define rates as empty List<Int>
+    add 2500 to rates
+    add 3333 to rates
+    add 5000 to rates
+    add 100 to rates
+    add 9999 to rates
+    define hours_batch as empty List<Int>
+    add 0 to hours_batch
+    add 16000 to hours_batch
+    add 16001 to hours_batch
+    add 24000 to hours_batch
+    add 3750 to hours_batch
+    add 8000 to hours_batch
+    add 32000 to hours_batch
+    for r from 0 to length of rates - 1:
+        define emp as Employee(id="bx", name="Batch", rate_cents=rates[r], filing_status="married")
+        for h from 0 to length of hours_batch - 1:
+            define card as Timecard(employee_id="bx", month="2026-08", hours_x100=hours_batch[h])
+            define slip as compute_payslip(emp, card)
+            # per-line identity: net = gross + overtime premium - deductions
+            assert slip.net_cents == slip.gross_cents + slip.overtime_premium_cents - slip.retirement_cents - slip.tax_cents
+            # stored hours always split back to the input
+            assert slip.regular_hours_x100 + slip.ot_hours_x100 == hours_batch[h]
+            # retirement is always 5% of gross, half-up
+            assert slip.retirement_cents == (slip.gross_cents * 5 + 50) / 100
+            # net can never go negative for these inputs
+            assert slip.net_cents >= 0
+
+test payslip_stores_employee_snapshot_test:
+    define emp as Employee(id="e1", name="Ada Lovelace", rate_cents=2500, filing_status="single")
+    define card as Timecard(employee_id="e1", month="2026-10", hours_x100=16000)
+    define slip as compute_payslip(emp, card)
+    # the payslip is a stored snapshot: rendering needs no live employee data
+    assert slip.employee_id == "e1"
+    assert slip.month == "2026-10"
+    assert slip.name == "Ada Lovelace"
+    assert slip.filing_status == "single"
+    assert slip.rate_cents == 2500
+    assert slip.hours_x100 == 16000
+
+test validate_add_time_unknown_employee_test:
+    define emps as empty List<Employee>
+    add Employee(id="e1", name="Ada", rate_cents=2500, filing_status="single") to emps
+    define cards as empty List<Timecard>
+    define slips as empty List<Payslip>
+    define err as validate_add_time(emps, cards, slips, "nobody", "2026-10", 100)
+    assert err is not nothing
+    define ok as validate_add_time(emps, cards, slips, "e1", "2026-10", 100)
+    assert ok is nothing
+
+test validate_add_time_bad_hours_test:
+    define emps as empty List<Employee>
+    add Employee(id="e1", name="Ada", rate_cents=2500, filing_status="single") to emps
+    define cards as empty List<Timecard>
+    define slips as empty List<Payslip>
+    assert validate_add_time(emps, cards, slips, "e1", "2026-10", 0) is not nothing
+    assert validate_add_time(emps, cards, slips, "e1", "2026-10", 0 - 5) is not nothing
+
+test validate_add_time_bad_month_test:
+    define emps as empty List<Employee>
+    add Employee(id="e1", name="Ada", rate_cents=2500, filing_status="single") to emps
+    define cards as empty List<Timecard>
+    define slips as empty List<Payslip>
+    assert validate_add_time(emps, cards, slips, "e1", "2026-1", 100) is not nothing
+    assert validate_add_time(emps, cards, slips, "e1", "october", 100) is not nothing
+
+test validate_add_time_hours_cap_test:
+    # hours cap keeps hours_x100 * rate_cents far inside 64-bit range on
+    # every backend (74400 x100 = 744.00h = every hour of a 31-day month)
+    define emps as empty List<Employee>
+    add Employee(id="e1", name="Ada", rate_cents=2500, filing_status="single") to emps
+    define cards as empty List<Timecard>
+    define slips as empty List<Payslip>
+    # cap is inclusive: exactly 74400 is accepted, one hundredth more is not
+    assert validate_add_time(emps, cards, slips, "e1", "2026-10", 74400) is nothing
+    assert validate_add_time(emps, cards, slips, "e1", "2026-10", 74401) is not nothing
+    # an unparseable-huge value is rejected by the cap, not wrapped silently
+    assert validate_add_time(emps, cards, slips, "e1", "2026-10", 9223372036854775807) is not nothing
+
+test validate_add_time_accumulated_hours_cap_test:
+    # the cap applies to the projected accumulated total, not each entry
+    define emps as empty List<Employee>
+    add Employee(id="e1", name="Ada", rate_cents=2500, filing_status="single") to emps
+    define cards as empty List<Timecard>
+    add Timecard(employee_id="e1", month="2026-10", hours_x100=74300) to cards
+    define slips as empty List<Payslip>
+    # 74300 + 100 = 74400 exactly: accepted
+    assert validate_add_time(emps, cards, slips, "e1", "2026-10", 100) is nothing
+    # 74300 + 101 = 74401: rejected
+    assert validate_add_time(emps, cards, slips, "e1", "2026-10", 101) is not nothing
+
+test validate_add_time_locked_month_test:
+    # a payslip stored for 2026-10 locks that month's timecards: further
+    # add-time for 2026-10 is rejected, other months stay open
+    define emps as empty List<Employee>
+    add Employee(id="e1", name="Ada", rate_cents=2500, filing_status="single") to emps
+    define slips as empty List<Payslip>
+    add Payslip(employee_id="e1", month="2026-10", name="Ada", filing_status="single", rate_cents=2500, hours_x100=16000, regular_hours_x100=16000, ot_hours_x100=0, gross_cents=400000, overtime_premium_cents=0, retirement_cents=20000, tax_cents=53600, net_cents=326400) to slips
+    define cards as empty List<Timecard>
+    define locked as validate_add_time(emps, cards, slips, "e1", "2026-10", 100)
+    assert locked is not nothing
+    define other as validate_add_time(emps, cards, slips, "e1", "2026-11", 100)
+    assert other is nothing

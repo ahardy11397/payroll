@@ -1,0 +1,197 @@
+# 01_model_test.meme -- records, JSON persistence roundtrips, Optional
+# reader tolerance (missing / corrupt / wrong-shape files), lookup helpers,
+# and the add-time mutator. Scratch files use per-test unique names and
+# live in the compiler-managed test working directory (deleted after runs).
+use payroll_model
+
+test employee_roundtrip_test:
+    define emps as empty List<Employee>
+    add Employee(id="e1", name="Ada Lovelace", rate_cents=5000, filing_status="single") to emps
+    add Employee(id="e2", name="Grace Hopper", rate_cents=6500, filing_status="married") to emps
+    call save_employees(emps, "pr_roundtrip_employees.json")
+    define loaded as read json records Employee from file "pr_roundtrip_employees.json" or else nothing
+    assert loaded is not nothing
+    define back as value of loaded
+    assert length of back == 2
+    assert back[0].id == "e1"
+    assert back[0].name == "Ada Lovelace"
+    assert back[0].rate_cents == 5000
+    assert back[0].filing_status == "single"
+    assert back[1].filing_status == "married"
+
+test timecard_roundtrip_test:
+    define cards as empty List<Timecard>
+    add Timecard(employee_id="e1", month="2026-10", hours_x100=16000) to cards
+    add Timecard(employee_id="e1", month="2026-11", hours_x100=16001) to cards
+    call save_timecards(cards, "pr_roundtrip_timecards.json")
+    define loaded as read json records Timecard from file "pr_roundtrip_timecards.json" or else nothing
+    assert loaded is not nothing
+    define back as value of loaded
+    assert length of back == 2
+    assert back[0].month == "2026-10"
+    assert back[0].hours_x100 == 16000
+    assert back[1].hours_x100 == 16001
+
+test payslip_roundtrip_test:
+    define slips as empty List<Payslip>
+    add Payslip(employee_id="e1", month="2026-10", name="Ada Lovelace", filing_status="single", rate_cents=2500, hours_x100=16001, regular_hours_x100=16000, ot_hours_x100=1, gross_cents=400025, overtime_premium_cents=13, retirement_cents=20001, tax_cents=53608, net_cents=326429) to slips
+    call save_payslips(slips, "pr_roundtrip_payslips.json")
+    define loaded as read json records Payslip from file "pr_roundtrip_payslips.json" or else nothing
+    assert loaded is not nothing
+    define back as value of loaded
+    assert length of back == 1
+    assert back[0].employee_id == "e1"
+    assert back[0].month == "2026-10"
+    assert back[0].name == "Ada Lovelace"
+    assert back[0].filing_status == "single"
+    assert back[0].rate_cents == 2500
+    assert back[0].hours_x100 == 16001
+    assert back[0].regular_hours_x100 == 16000
+    assert back[0].ot_hours_x100 == 1
+    assert back[0].gross_cents == 400025
+    assert back[0].overtime_premium_cents == 13
+    assert back[0].retirement_cents == 20001
+    assert back[0].tax_cents == 53608
+    assert back[0].net_cents == 326429
+
+test load_missing_files_test:
+    define emps as load_employees("pr_missing_employees.json")
+    assert length of emps == 0
+    define cards as load_timecards("pr_missing_timecards.json")
+    assert length of cards == 0
+    define slips as load_payslips("pr_missing_payslips.json")
+    assert length of slips == 0
+
+test corrupt_file_tolerance_test:
+    write file "pr_corrupt_employees.json" with "not json at all {"
+    write file "pr_corrupt_timecards.json" with "[broken"
+    write file "pr_corrupt_payslips.json" with "{\"half\":"
+    define emps as load_employees("pr_corrupt_employees.json")
+    assert length of emps == 0
+    define cards as load_timecards("pr_corrupt_timecards.json")
+    assert length of cards == 0
+    define slips as load_payslips("pr_corrupt_payslips.json")
+    assert length of slips == 0
+
+test wrong_shape_file_tolerance_test:
+    # valid JSON, but not an array of the expected records
+    write file "pr_wrong_shape_employees.json" with "[1, 2, 3]"
+    write file "pr_wrong_shape_timecards.json" with "\"a string\""
+    write file "pr_wrong_shape_payslips.json" with "{\"employee_id\": \"e1\"}"
+    define emps as load_employees("pr_wrong_shape_employees.json")
+    assert length of emps == 0
+    define cards as load_timecards("pr_wrong_shape_timecards.json")
+    assert length of cards == 0
+    define slips as load_payslips("pr_wrong_shape_payslips.json")
+    assert length of slips == 0
+
+test find_employee_index_test:
+    define emps as empty List<Employee>
+    add Employee(id="e1", name="Ada", rate_cents=1000, filing_status="single") to emps
+    add Employee(id="e2", name="Grace", rate_cents=2000, filing_status="married") to emps
+    assert find_employee_index(emps, "e1") == 0
+    assert find_employee_index(emps, "e2") == 1
+    assert find_employee_index(emps, "nobody") == 0 - 1
+
+test find_timecard_and_payslip_index_test:
+    define cards as empty List<Timecard>
+    add Timecard(employee_id="e1", month="2026-10", hours_x100=100) to cards
+    assert find_timecard_index(cards, "e1", "2026-10") == 0
+    assert find_timecard_index(cards, "e1", "2026-11") == 0 - 1
+    define slips as empty List<Payslip>
+    add Payslip(employee_id="e2", month="2026-10", name="G", filing_status="single", rate_cents=1, hours_x100=1, regular_hours_x100=1, ot_hours_x100=0, gross_cents=1, overtime_premium_cents=0, retirement_cents=0, tax_cents=0, net_cents=1) to slips
+    assert find_payslip_index(slips, "e2", "2026-10") == 0
+    assert find_payslip_index(slips, "e1", "2026-10") == 0 - 1
+
+test has_payslip_and_month_is_run_test:
+    define slips as empty List<Payslip>
+    assert has_payslip(slips, "e1", "2026-10") == false
+    assert month_is_run(slips, "2026-10") == false
+    add Payslip(employee_id="e1", month="2026-10", name="Ada", filing_status="single", rate_cents=1, hours_x100=1, regular_hours_x100=1, ot_hours_x100=0, gross_cents=1, overtime_premium_cents=0, retirement_cents=0, tax_cents=0, net_cents=1) to slips
+    assert has_payslip(slips, "e1", "2026-10") == true
+    assert has_payslip(slips, "e1", "2026-11") == false
+    assert has_payslip(slips, "e2", "2026-10") == false
+    assert month_is_run(slips, "2026-10") == true
+    assert month_is_run(slips, "2026-11") == false
+
+test partial_record_file_flagged_corrupt_test:
+    # a file that exists but holds a record missing a required field must be
+    # reported as corrupt, never silently treated as empty state (a silent
+    # wipe would defeat the duplicate-run lock and destroy stored payslips)
+    write file "pr_partial_employee.json" with "[{\"id\": \"e1\", \"name\": \"Ada\"}]"
+    define err as first_corrupt_data_file("pr_partial_employee.json", "pr_absent_timecards.json", "pr_absent_payslips.json")
+    assert err is not nothing
+
+test intact_or_missing_data_files_ok_test:
+    write file "pr_ok_employee.json" with "[{\"id\": \"e1\", \"name\": \"Ada\", \"rate_cents\": 100, \"filing_status\": \"single\"}]"
+    define err as first_corrupt_data_file("pr_ok_employee.json", "pr_absent_timecards.json", "pr_absent_payslips.json")
+    assert err is nothing
+    # all three files missing is the normal first-run state
+    define fresh as first_corrupt_data_file("pr_absent_employees.json", "pr_absent_timecards.json", "pr_absent_payslips.json")
+    assert fresh is nothing
+
+test partial_timecard_and_payslip_file_flagged_corrupt_test:
+    write file "pr_partial_timecard.json" with "[{\"employee_id\": \"e1\", \"month\": \"2026-10\"}]"
+    write file "pr_partial_payslip.json" with "[{\"employee_id\": \"e1\", \"month\": \"2026-10\", \"net_cents\": 1}]"
+    define terr as first_corrupt_data_file("pr_absent_employees.json", "pr_partial_timecard.json", "pr_absent_payslips.json")
+    assert terr is not nothing
+    define perr as first_corrupt_data_file("pr_absent_employees.json", "pr_absent_timecards.json", "pr_partial_payslip.json")
+    assert perr is not nothing
+
+test rate_cap_validation_test:
+    # rate cap keeps every downstream product (hours_x100 * rate_cents and
+    # the 22% tax multiply) far inside 64-bit range on all six backends
+    assert is_plausible_rate_cents(1) == true
+    assert is_plausible_rate_cents(2500) == true
+    assert is_plausible_rate_cents(100000000) == true
+    assert is_plausible_rate_cents(100000001) == false
+    assert is_plausible_rate_cents(0) == false
+    assert is_plausible_rate_cents(0 - 5) == false
+    assert is_plausible_rate_cents(9223372036854775807) == false
+
+test filing_status_validation_test:
+    assert is_valid_filing_status("single") == true
+    assert is_valid_filing_status("married") == true
+    assert is_valid_filing_status("Single") == false
+    assert is_valid_filing_status("divorced") == false
+    assert is_valid_filing_status("") == false
+
+test validate_month_test:
+    assert validate_month("2026-10") is nothing
+    assert validate_month("1970-01") is nothing
+    assert validate_month("2099-12") is nothing
+    assert validate_month("2026-1") is not nothing
+    assert validate_month("26-10") is not nothing
+    assert validate_month("2026/10") is not nothing
+    assert validate_month("2026") is not nothing
+    assert validate_month("2026-13") is not nothing
+    assert validate_month("2026-00") is not nothing
+    assert validate_month("1969-12") is not nothing
+    assert validate_month("20x6-10") is not nothing
+    assert validate_month("") is not nothing
+
+test apply_add_time_accumulates_test:
+    define cards as empty List<Timecard>
+    # first entry creates the timecard
+    set cards to apply_add_time(cards, "e1", "2026-10", 8000)
+    assert length of cards == 1
+    assert cards[0].hours_x100 == 8000
+    # second entry for the same employee+month accumulates (this is the
+    # "edit" that a payroll run locks)
+    set cards to apply_add_time(cards, "e1", "2026-10", 750)
+    assert length of cards == 1
+    assert cards[0].hours_x100 == 8750
+    # a different month creates a separate timecard
+    set cards to apply_add_time(cards, "e1", "2026-11", 16000)
+    assert length of cards == 2
+    assert cards[0].hours_x100 == 8750
+    assert cards[1].hours_x100 == 16000
+    # a different employee is separate too
+    set cards to apply_add_time(cards, "e2", "2026-10", 100)
+    assert length of cards == 3
+    assert cards[2].employee_id == "e2"
+    # the caller's own list is never mutated (value semantics)
+    define fresh as empty List<Timecard>
+    define untouched as apply_add_time(fresh, "e9", "2026-10", 100)
+    assert length of fresh == 0
+    assert length of untouched == 1

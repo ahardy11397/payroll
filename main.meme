@@ -1,0 +1,168 @@
+# main.meme -- payroll CLI. argv router only; domain logic lives in the
+# payroll_model and payroll_logic modules.
+#
+# State: JSON files under data/ (created on demand):
+#   data/employees.json  List<Employee>
+#   data/timecards.json  List<Timecard>
+#   data/payslips.json   List<Payslip>
+#
+# Exit codes: 0 success, 1 validation/usage error.
+# Every error prints exactly one stderr line (usage on unknown command)
+# and exits 1.
+
+use payroll_model
+use payroll_logic
+
+function report_error(msg: String) -> Void:
+    # one clear line to stderr (the language has no stderr print)
+    append msg + "\n" to file "/dev/stderr"
+
+function print_usage() -> Void:
+    append "Usage:" + "\n" to file "/dev/stderr"
+    append "  payroll add-employee <id> <name> <hourly-rate-cents> <single|married>" + "\n" to file "/dev/stderr"
+    append "  payroll add-time <employee-id> <hours-x100> [yyyy-mm]" + "\n" to file "/dev/stderr"
+    append "  payroll run <yyyy-mm>" + "\n" to file "/dev/stderr"
+    append "  payroll payslip <employee-id> <yyyy-mm>" + "\n" to file "/dev/stderr"
+    append "  payroll history <employee-id>" + "\n" to file "/dev/stderr"
+
+define employees_path as "data/employees.json"
+define timecards_path as "data/timecards.json"
+define payslips_path as "data/payslips.json"
+
+# fail loudly (one stderr line) when a data file exists but cannot be
+# parsed as its record list; a missing file is the normal first-run state
+define cerr as first_corrupt_data_file(employees_path, timecards_path, payslips_path)
+if cerr is not nothing:
+    call report_error(value of cerr)
+    exit with code 1
+
+define employees as load_employees(employees_path)
+define timecards as load_timecards(timecards_path)
+define payslips as load_payslips(payslips_path)
+define arg_total as argument count
+
+if arg_total < 2:
+    call print_usage()
+    exit with code 1
+
+define cmd as argument 1
+
+if cmd == "add-employee":
+    if arg_total != 6:
+        call report_error("usage: payroll add-employee <id> <name> <hourly-rate-cents> <single|married>")
+        exit with code 1
+    define emp_id as argument 2
+    define name as argument 3
+    define rate_text as argument 4
+    # at most 9 digits: anything longer cannot be a valid capped rate and
+    # would parse divergently across backends (64-bit wrap vs big int)
+    if length of string rate_text > 9:
+        call report_error("hourly rate must be a positive number of cents, at most 100000000 ($1000000.00 per hour)")
+        exit with code 1
+    define rate as integer value of rate_text or else 0
+    define status as argument 5
+    if emp_id == "":
+        call report_error("employee id must not be empty")
+        exit with code 1
+    if not (is_plausible_rate_cents(rate)):
+        call report_error("hourly rate must be a positive number of cents, at most 100000000 ($1000000.00 per hour)")
+        exit with code 1
+    if not (is_valid_filing_status(status)):
+        call report_error("filing status must be single or married")
+        exit with code 1
+    if find_employee_index(employees, emp_id) >= 0:
+        call report_error("employee already exists: " + emp_id)
+        exit with code 1
+    define emp as Employee(id=emp_id, name=name, rate_cents=rate, filing_status=status)
+    add emp to employees
+    create directory "data"
+    call save_employees(employees, employees_path)
+    print "employee added: " + name + " (id " + emp_id + ", $" + dollars_text(rate) + "/hour, " + status + ")"
+    exit with code 0
+else if cmd == "add-time":
+    if arg_total != 4 and arg_total != 5:
+        call report_error("usage: payroll add-time <employee-id> <hours-x100> [yyyy-mm]")
+        exit with code 1
+    define emp_id as argument 2
+    define hours_text_raw as argument 3
+    # at most 5 digits (max 74400): anything longer cannot be valid and
+    # would parse divergently across backends (64-bit wrap vs big int)
+    if length of string hours_text_raw > 5:
+        call report_error("hours value too large (maximum 74400 = 744.00h)")
+        exit with code 1
+    define hours as integer value of hours_text_raw or else 0
+    define month as ""
+    if arg_total == 5:
+        set month to argument 4
+    else:
+        set month to epoch_to_month_text(current epoch seconds)
+    define verr as validate_add_time(employees, timecards, payslips, emp_id, month, hours)
+    if verr is not nothing:
+        call report_error(value of verr)
+        exit with code 1
+    set timecards to apply_add_time(timecards, emp_id, month, hours)
+    define card_idx as find_timecard_index(timecards, emp_id, month)
+    create directory "data"
+    call save_timecards(timecards, timecards_path)
+    print "time recorded: " + emp_id + " " + month + " total " + hours_text(timecards[card_idx].hours_x100) + "h"
+    exit with code 0
+else if cmd == "run":
+    if arg_total != 3:
+        call report_error("usage: payroll run <yyyy-mm>")
+        exit with code 1
+    define month as argument 2
+    define verr as validate_run(employees, timecards, payslips, month)
+    if verr is not nothing:
+        call report_error(value of verr)
+        exit with code 1
+    define paid as 0
+    define new_slips as empty List<Payslip>
+    for each t in timecards:
+        if t.month == month:
+            define emp_idx as find_employee_index(employees, t.employee_id)
+            define emp as employees[emp_idx]
+            define slip as compute_payslip(emp, t)
+            add slip to new_slips
+            print "paid " + emp.name + " (" + emp.id + "): net $" + dollars_text(slip.net_cents)
+            add 1 to paid
+    for each s in new_slips:
+        add s to payslips
+    create directory "data"
+    call save_payslips(payslips, payslips_path)
+    print "payroll run complete for " + month + ": " + text of paid + " payslip(s)"
+    exit with code 0
+else if cmd == "payslip":
+    if arg_total != 4:
+        call report_error("usage: payroll payslip <employee-id> <yyyy-mm>")
+        exit with code 1
+    define emp_id as argument 2
+    define month as argument 3
+    if find_employee_index(employees, emp_id) < 0:
+        call report_error("unknown employee: " + emp_id)
+        exit with code 1
+    define slip_idx as find_payslip_index(payslips, emp_id, month)
+    if slip_idx < 0:
+        call report_error("no payslip for " + emp_id + " in " + month)
+        exit with code 1
+    call render_payslip(payslips[slip_idx])
+    exit with code 0
+else if cmd == "history":
+    if arg_total != 3:
+        call report_error("usage: payroll history <employee-id>")
+        exit with code 1
+    define emp_id as argument 2
+    if find_employee_index(employees, emp_id) < 0:
+        call report_error("unknown employee: " + emp_id)
+        exit with code 1
+    define months as history_months(payslips, emp_id)
+    if length of months == 0:
+        print "no payslips for " + emp_id
+        exit with code 0
+    for each m in months:
+        define slip_idx as find_payslip_index(payslips, emp_id, m)
+        call render_payslip(payslips[slip_idx])
+    exit with code 0
+else:
+    call report_error("unknown command: " + cmd)
+    call print_usage()
+    exit with code 1
