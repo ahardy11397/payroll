@@ -2,7 +2,7 @@
 # reader tolerance (missing / corrupt / wrong-shape files), lookup helpers,
 # and the add-time mutator. Scratch files use per-test unique names and
 # live in the compiler-managed test working directory (deleted after runs).
-use payroll_model
+use ../../payroll_model
 
 test employee_roundtrip_test:
     define emps as empty List<Employee>

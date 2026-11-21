@@ -1,8 +1,8 @@
 # 04_payslip_test.meme -- full payslip computation at the overtime boundary
 # (exactly 160h vs 160.01h), the net identity over a random-ish batch, and
 # add-time validation (unknown employee, bad hours, locked month).
-use payroll_logic
-use payroll_model
+use ../../payroll_logic
+use ../../payroll_model
 
 test no_overtime_exactly_160h_test:
     define emp as Employee(id="e1", name="Ada Lovelace", rate_cents=2500, filing_status="single")

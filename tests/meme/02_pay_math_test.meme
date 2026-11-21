@@ -1,7 +1,7 @@
 # 02_pay_math_test.meme -- overtime split at the 160h boundary, half-up
 # rounding on fractional cents (straight pay, overtime premium, retirement),
 # and bracket threshold lookup.
-use payroll_logic
+use ../../payroll_logic
 
 test hours_split_exactly_160h_test:
     assert regular_hours_x100(16000) == 16000

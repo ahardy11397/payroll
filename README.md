@@ -17,8 +17,7 @@ suite.
 | `main.meme` | argv router only (loads `payroll_model` + `payroll_logic` modules) |
 | `payroll_model.meme` | domain: `Employee`/`Timecard`/`Payslip` records, JSON loaders/savers, lookup, `apply_add_time` mutator (explicit element-wise copy, value semantics on every backend) |
 | `payroll_logic.meme` | pay math (overtime, retirement, marginal tax brackets), payslip building + rendering, validate functions, UTC calendar conversion, exact money/hours text |
-| `tests/meme/*.meme` | 51 test cases (`meme test` discovers them) |
-| `tests/meme/payroll_model.meme`, `tests/meme/payroll_logic.meme` | symlinks to the root modules (modules resolve relative to the importing file's directory) |
+| `tests/meme/*.meme` | 58 test cases across five suites (all six targets green) |
 
 ## CLI
 
@@ -169,9 +168,7 @@ Notes:
 
 - **Error channel:** all operation validation returns `Optional<String>`
   (`nothing` = ok, `some` = error message). `main.meme` prints the message
-  to stderr and exits 1. The language has no stderr print, so error lines
-  are written with `append ... to file "/dev/stderr"` (produces real
-  stderr bytes with identical exit codes on all six backends).
+  to stderr via `print error` and exits 1.
 - **Value semantics:** mutators (`apply_add_time`) return a *new* list
   built with an explicit element-wise copy — the plain `define list out as
   src` copy idiom aliases backing storage on the Go, C, and TypeScript
@@ -179,13 +176,10 @@ Notes:
   behave identically.
 - **Integer money only:** cents are `Int` everywhere; the only fractional
   step (hours_x100 × rate_cents ÷ 100) rounds half-up via `(x + 50) / 100`
-  integer division. The dollar column is rendered by exact integer
-  `dollars_text` (1234 → "12.34"), hours by `hours_text` (16001 →
-  "160.01"). Memelang has no `Int`→`Float` conversion (arithmetic is
-  same-type only and `format <f> with N decimals` requires a `Float`
-  target), so `format ... with 2 decimals` appears only in a documented
-  shim (`dollars_float_preview`) that keeps the runtime float helper linked
-  for the JSON serializer; it never participates in money math.
+  integer division. The dollar column is rendered by `dollars_text` via
+  `format float of cents / 100.0 with 2 decimals`, hours by `hours_text`
+  (16001 → "160.01"). A documented shim (`dollars_float_preview`) keeps the
+  runtime float helper linked for the JSON serializer.
 - **Determinism:** history sorts by month string (`yyyy-mm` sorts
   lexicographically = chronologically); the only wall-clock use is
   `add-time`'s default month, computed by walking-calendar UTC conversion

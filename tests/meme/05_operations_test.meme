@@ -1,7 +1,7 @@
 # 05_operations_test.meme -- run validation (duplicate run rejection, empty
 # month), history month sorting, payslip lookup, and rendering text helpers.
-use payroll_logic
-use payroll_model
+use ../../payroll_logic
+use ../../payroll_model
 
 test validate_run_ok_test:
     define emps as empty List<Employee>

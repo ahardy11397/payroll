@@ -1,7 +1,7 @@
 # 03_tax_test.meme -- marginal bracket math at exact boundaries
 # (250000 / 500000 cents), one cent past, and well past, for both filing
 # statuses.
-use payroll_logic
+use ../../payroll_logic
 
 test single_boundary_exact_test:
     # 10% of 250000 cents ($2500.00) = 25000 cents exactly, still in the

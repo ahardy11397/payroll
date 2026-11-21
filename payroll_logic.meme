@@ -136,19 +136,7 @@ function epoch_to_month_text(e: Int) -> String:
 # 1234 cents -> "12.34", -250 -> "-2.50"; 16001 -> "160.01".
 
 function dollars_text(cents: Int) -> String:
-    define mag as cents
-    define neg as cents < 0
-    if neg:
-        set mag to 0 - cents
-    define whole as mag / 100
-    define rem as mag % 100
-    define rem_text as text of rem
-    if rem < 10:
-        set rem_text to "0" + rem_text
-    define out as text of whole + "." + rem_text
-    if neg:
-        set out to "-" + out
-    return out
+    return format float of cents / 100.0 with 2 decimals
 
 function hours_text(hours_x100: Int) -> String:
     define whole as hours_x100 / 100

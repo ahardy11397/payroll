@@ -14,16 +14,16 @@ use payroll_model
 use payroll_logic
 
 function report_error(msg: String) -> Void:
-    # one clear line to stderr (the language has no stderr print)
-    append msg + "\n" to file "/dev/stderr"
+    # one clear line to stderr
+    print error msg
 
 function print_usage() -> Void:
-    append "Usage:" + "\n" to file "/dev/stderr"
-    append "  payroll add-employee <id> <name> <hourly-rate-cents> <single|married>" + "\n" to file "/dev/stderr"
-    append "  payroll add-time <employee-id> <hours-x100> [yyyy-mm]" + "\n" to file "/dev/stderr"
-    append "  payroll run <yyyy-mm>" + "\n" to file "/dev/stderr"
-    append "  payroll payslip <employee-id> <yyyy-mm>" + "\n" to file "/dev/stderr"
-    append "  payroll history <employee-id>" + "\n" to file "/dev/stderr"
+    print error "Usage:"
+    print error "  payroll add-employee <id> <name> <hourly-rate-cents> <single|married>"
+    print error "  payroll add-time <employee-id> <hours-x100> [yyyy-mm]"
+    print error "  payroll run <yyyy-mm>"
+    print error "  payroll payslip <employee-id> <yyyy-mm>"
+    print error "  payroll history <employee-id>"
 
 define employees_path as "data/employees.json"
 define timecards_path as "data/timecards.json"
